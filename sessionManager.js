@@ -259,6 +259,7 @@ async function createSession(userId) {
     chats: cachedChats,
     messages: cachedMessages,
     presence: new Map(), // chatId -> { typing: bool, timestamp }
+    myPhotoUrl: null,    // foto de perfil propia
     lastActivity: Date.now(),
     saveCreds,
   };
@@ -301,6 +302,15 @@ async function createSession(userId) {
 
       touch(userId);
       processOutbox(userId, entry.sock).catch(e => console.error('[outbox] Error:', e));
+
+      // Obtener foto de perfil propia
+      try {
+        const myJid = sock.user?.id;
+        if (myJid) {
+          const url = await sock.profilePictureUrl(myJid, 'image');
+          entry.myPhotoUrl = url || null;
+        }
+      } catch (_) { entry.myPhotoUrl = null; }
     }
 
     if (connection === 'close') {

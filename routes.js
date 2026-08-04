@@ -174,6 +174,32 @@ router.post('/send', async (req, res) => {
   }
 });
 
+router.get('/myphoto/:userId', auth, async (req, res) => {
+  const session = getSession(req.params.userId);
+  if (!session?.myPhotoUrl) return res.json({ photo: null });
+  try {
+    const https = require('https');
+    const http = require('http');
+    const url = session.myPhotoUrl;
+    const client = url.startsWith('https') ? https : http;
+    client.get(url, (imgRes) => {
+      const chunks = [];
+      imgRes.on('data', c => chunks.push(c));
+      imgRes.on('end', async () => {
+        let buf = Buffer.concat(chunks);
+        try {
+          const sharp = require('sharp');
+          buf = await sharp(buf).resize(28, 28, { fit: 'cover' }).jpeg({ quality: 60 }).toBuffer();
+        } catch (_) {}
+        const b64 = buf.toString('base64');
+        res.json({ photo: 'data:image/jpeg;base64,' + b64 });
+      });
+    }).on('error', () => res.json({ photo: null }));
+  } catch (_) {
+    res.json({ photo: null });
+  }
+});
+
 module.exports = router;
 
 // GET /presence/:userId/:chatId?code=XXX
