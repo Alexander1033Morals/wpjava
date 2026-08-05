@@ -189,8 +189,23 @@ router.get('/myphoto/:userId', auth, async (req, res) => {
         let buf = Buffer.concat(chunks);
         try {
           const sharp = require('sharp');
-          buf = await sharp(buf).resize(28, 28, { fit: 'cover' }).jpeg({ quality: 60 }).toBuffer();
-        } catch (_) {}
+          const size = 28;
+          // Máscara circular SVG
+          const circleSvg = Buffer.from(
+            `<svg><circle cx="${size/2}" cy="${size/2}" r="${size/2}" /></svg>`
+          );
+          buf = await sharp(buf)
+            .resize(size, size, { fit: 'cover' })
+            .composite([{ input: circleSvg, blend: 'dest-in' }])
+            .flatten({ background: { r: 7, g: 94, b: 84 } })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+        } catch (_) {
+          try {
+            const sharp = require('sharp');
+            buf = await sharp(buf).resize(28, 28, { fit: 'cover' }).jpeg({ quality: 60 }).toBuffer();
+          } catch (_2) {}
+        }
         const b64 = buf.toString('base64');
         res.json({ photo: 'data:image/jpeg;base64,' + b64 });
       });
