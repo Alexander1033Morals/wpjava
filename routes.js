@@ -189,33 +189,10 @@ router.get('/myphoto/:userId', auth, async (req, res) => {
         let buf = Buffer.concat(chunks);
         try {
           const sharp = require('sharp');
-          const size = 28;
-          const r = size / 2;
-          // Redimensionar foto a 28x28 y obtener pixels raw RGBA
-          const raw = await sharp(buf)
-            .resize(size, size, { fit: 'cover' })
-            .raw()
-            .ensureAlpha()
-            .toBuffer();
-          // Pintar esquinas fuera del círculo con color del header #075E54
-          for (let y = 0; y < size; y++) {
-            for (let x = 0; x < size; x++) {
-              const dx = x - r, dy = y - r;
-              if (dx * dx + dy * dy > r * r) {
-                const i = (y * size + x) * 4;
-                raw[i]   = 7;   // R
-                raw[i+1] = 94;  // G
-                raw[i+2] = 84;  // B
-                raw[i+3] = 255;
-              }
-            }
-          }
-          buf = await sharp(raw, { raw: { width: size, height: size, channels: 4 } })
-            .png()
-            .toBuffer();
+          buf = await sharp(buf).resize(28, 28, { fit: 'cover' }).jpeg({ quality: 80 }).toBuffer();
         } catch (_) {}
         const b64 = buf.toString('base64');
-        res.json({ photo: 'data:image/png;base64,' + b64 });
+        res.json({ photo: 'data:image/jpeg;base64,' + b64 });
       });
     }).on('error', () => res.json({ photo: null }));
   } catch (_) {
