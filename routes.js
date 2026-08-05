@@ -53,6 +53,7 @@ router.get('/chats/:userId', auth, (req, res) => {
   const session = getSession(req.params.userId);
   const chats = [...session.chats.entries()]
     .map(([id, c]) => ({ id, ...c, unreadCount: c.unreadCount || 0 }))
+    .filter(c => c.name !== 'No conocido' || (c.lastMessage && c.lastMessage.length > 0))
     .sort((a, b) => b.lastTimestamp - a.lastTimestamp);
   const bodyStr = JSON.stringify({ chats });
   console.log(`[chats] Total: ${chats.length}, bytes: ${Buffer.byteLength(bodyStr)}`);
