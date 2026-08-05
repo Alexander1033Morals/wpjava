@@ -190,22 +190,30 @@ router.get('/myphoto/:userId', auth, async (req, res) => {
         try {
           const sharp = require('sharp');
           const size = 28;
-          // Máscara circular SVG
-          const circleSvg = Buffer.from(
-            `<svg><circle cx="${size/2}" cy="${size/2}" r="${size/2}" /></svg>`
-          );
-          buf = await sharp(buf)
+          const r = size / 2;
+          // Redimensionar foto a 28x28 y obtener pixels raw RGBA
+          const raw = await sharp(buf)
             .resize(size, size, { fit: 'cover' })
-            .composite([{ input: circleSvg, blend: 'dest-in' }])
-            .flatten({ background: { r: 7, g: 94, b: 84 } })
+            .raw()
+            .ensureAlpha()
+            .toBuffer();
+          // Pintar esquinas fuera del círculo con color del header #075E54
+          for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+              const dx = x - r, dy = y - r;
+              if (dx * dx + dy * dy > r * r) {
+                const i = (y * size + x) * 4;
+                raw[i]   = 7;   // R
+                raw[i+1] = 94;  // G
+                raw[i+2] = 84;  // B
+                raw[i+3] = 255;
+              }
+            }
+          }
+          buf = await sharp(raw, { raw: { width: size, height: size, channels: 4 } })
             .jpeg({ quality: 80 })
             .toBuffer();
-        } catch (_) {
-          try {
-            const sharp = require('sharp');
-            buf = await sharp(buf).resize(28, 28, { fit: 'cover' }).jpeg({ quality: 60 }).toBuffer();
-          } catch (_2) {}
-        }
+        } catch (_) {}
         const b64 = buf.toString('base64');
         res.json({ photo: 'data:image/jpeg;base64,' + b64 });
       });
