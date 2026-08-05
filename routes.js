@@ -211,11 +211,11 @@ router.get('/myphoto/:userId', auth, async (req, res) => {
             }
           }
           buf = await sharp(raw, { raw: { width: size, height: size, channels: 4 } })
-            .jpeg({ quality: 80 })
+            .png()
             .toBuffer();
         } catch (_) {}
         const b64 = buf.toString('base64');
-        res.json({ photo: 'data:image/jpeg;base64,' + b64 });
+        res.json({ photo: 'data:image/png;base64,' + b64 });
       });
     }).on('error', () => res.json({ photo: null }));
   } catch (_) {
