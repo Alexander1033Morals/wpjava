@@ -177,13 +177,19 @@ router.post('/send', async (req, res) => {
 
 router.get('/myphoto/:userId', auth, async (req, res) => {
   const session = getSession(req.params.userId);
-  if (!session?.myPhotoUrl) return res.json({ photo: null });
+  if (!session) return res.json({ photo: null });
   try {
+    // Obtener URL fresca cada vez para reflejar cambios de foto
+    const myJid = session.sock?.user?.id;
+    if (!myJid) return res.json({ photo: null });
+    let photoUrl = null;
+    try { photoUrl = await session.sock.profilePictureUrl(myJid, 'image'); } catch (_) {}
+    if (!photoUrl) return res.json({ photo: null });
+
     const https = require('https');
     const http = require('http');
-    const url = session.myPhotoUrl;
-    const client = url.startsWith('https') ? https : http;
-    client.get(url, (imgRes) => {
+    const client = photoUrl.startsWith('https') ? https : http;
+    client.get(photoUrl, (imgRes) => {
       const chunks = [];
       imgRes.on('data', c => chunks.push(c));
       imgRes.on('end', async () => {
@@ -197,25 +203,18 @@ router.get('/myphoto/:userId', auth, async (req, res) => {
             .raw()
             .ensureAlpha()
             .toBuffer();
-          // Pintar esquinas fuera del círculo con color exacto del header #075E54
           for (let y = 0; y < size; y++) {
             for (let x = 0; x < size; x++) {
               const dx = x - r, dy = y - r;
               if (dx * dx + dy * dy > r * r) {
                 const i = (y * size + x) * 4;
-                raw[i]   = 7;
-                raw[i+1] = 94;
-                raw[i+2] = 84;
-                raw[i+3] = 255;
+                raw[i] = 7; raw[i+1] = 94; raw[i+2] = 84; raw[i+3] = 255;
               }
             }
           }
-          buf = await sharp(raw, { raw: { width: size, height: size, channels: 4 } })
-            .png()
-            .toBuffer();
+          buf = await sharp(raw, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer();
         } catch (_) {}
-        const b64 = buf.toString('base64');
-        res.json({ photo: 'data:image/png;base64,' + b64 });
+        res.json({ photo: 'data:image/png;base64,' + buf.toString('base64') });
       });
     }).on('error', () => res.json({ photo: null }));
   } catch (_) {
