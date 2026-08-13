@@ -59,7 +59,6 @@ router.get('/contacts/:userId', auth, async (req, res) => {
 
   const contacts = session.contacts || {};
   const totalRaw = Object.keys(contacts).length;
-  console.log('[contacts] session.contacts total keys:', totalRaw);
 
   // Construir array desde Baileys
   const all = [];
@@ -71,7 +70,6 @@ router.get('/contacts/:userId', auth, async (req, res) => {
     const phone = jid.replace('@s.whatsapp.net', '');
     all.push({ id: jid, name: sanitizeForJ2ME(name), phone: phone });
   }
-  console.log('[contacts] filtrados con nombre y @s.whatsapp.net:', all.length);
 
   if (all.length > 0) {
     // Guardar/actualizar en BD como respaldo (upsert)
@@ -84,13 +82,11 @@ router.get('/contacts/:userId', auth, async (req, res) => {
           [req.params.userId, contact.id, contact.name, contact.phone]
         );
       }
-      console.log('[contacts] BD actualizada con', all.length, 'contactos');
     } catch (dbErr) {
       console.error('[contacts] Error guardando en BD:', dbErr.message);
     }
   } else {
     // Baileys no tiene contactos — usar respaldo de BD
-    console.log('[contacts] Baileys sin contactos, usando respaldo BD');
     try {
       const dbContacts = await db.query(
         `SELECT contactId AS id, name, phone FROM contacts WHERE userId=? ORDER BY name ASC`,
@@ -139,10 +135,7 @@ router.get('/chats/:userId', auth, async (req, res) => {
     );
     const total = countRows[0].total;
     const hasMore = offset + pageSize < total;
-    console.log(`[chats] page=${page} devolviendo ${chats.length}/${total}, hasMore=${hasMore}`);
-    console.log(`[chats] unreadCounts:`, chats.map(c => ({ id: c.id, unread: c.unreadCount })));
     const respBody = JSON.stringify({ chats, hasMore, page, total });
-    console.log(`[chats] bytes respuesta: ${Buffer.byteLength(respBody)}`);
     res.json({ chats, hasMore, page, total });
   } catch (err) {
     console.error('[chats] DB error:', err.message);
@@ -212,7 +205,6 @@ router.get('/messages/:userId/:chatId', auth, async (req, res) => {
     // Convertir fromMe de tinyint a boolean
     const mapped = messages.map(m => ({ ...m, fromMe: !!m.fromMe, pushName: sanitizeForJ2ME(m.pushName) }));
     const hasMore = offset > 0;
-    console.log('[messages] chatId:', normChatId, 'total:', total, 'page:', page, 'devolviendo:', mapped.length);
     res.json({ messages: mapped, hasMore });
   } catch (err) {
     console.error('[messages] DB error:', err.message);
@@ -265,9 +257,7 @@ router.post('/send', async (req, res) => {
       const [wa] = await session.sock.onWhatsApp(jid);
       if (wa?.exists && wa?.jid) jid = wa.jid;
     } catch (_) {}
-    console.log('[send] Enviando a jid:', jid);
     const sent = await session.sock.sendMessage(jid, { text: message });
-    console.log('[send] OK, id:', sent?.key?.id);
 
     const msgEntry = {
       id: sent?.key?.id || 'pending_' + Date.now(),
@@ -289,7 +279,6 @@ router.post('/send', async (req, res) => {
       [message, msgEntry.timestamp * 1000, userId, jid]
     );
 
-    console.log('[send] guardado en DB para', jid);
     touch(userId);
     res.json({ ok: true, id: sent?.key?.id || null });
   } catch (err) {
@@ -304,64 +293,45 @@ router.get('/myphoto/:userId', auth, async (req, res) => {
   const userId = req.params.userId;
   const accessCode = req.query.code || req.headers['x-access-code'];
   
-  console.log(`[myphoto] INICIO REQUEST`);
-  console.log(`[myphoto] userId: ${userId}`);
-  console.log(`[myphoto] accessCode: ${accessCode ? '***' : 'NULL'}`);
   
   const session = getSession(userId);
-  console.log(`[myphoto] Session found: ${!!session}`);
   
   if (!session) {
-    console.log(`[myphoto] ERROR: No hay sesion`);
     return res.json({ photo: null });
   }
   
-  console.log(`[myphoto] Session.sock active: ${!!session.sock}`);
-  console.log(`[myphoto] Session.sock.user: ${JSON.stringify(session.sock?.user)}`);
   
   try {
     // Obtener URL fresca cada vez para reflejar cambios de foto
     const myJid = session.sock?.user?.id;
-    console.log(`[myphoto] myJid (session.sock.user.id): ${myJid}`);
     
     if (!myJid) {
-      console.log(`[myphoto] ERROR: No se pudo obtener myJid`);
       return res.json({ photo: null });
     }
     
     let photoUrl = null;
     try {
-      console.log(`[myphoto] Llamando session.sock.profilePictureUrl(${myJid})`);
       photoUrl = await session.sock.profilePictureUrl(myJid, 'image');
-      console.log(`[myphoto] profilePictureUrl OK: ${photoUrl?.substring(0, 80)}...`);
     } catch (profileErr) {
-      console.log(`[myphoto] profilePictureUrl ERROR: ${profileErr.message}`);
-      console.log(`[myphoto] Stack: ${profileErr.stack}`);
     }
     
     if (!photoUrl) {
-      console.log(`[myphoto] RESPUESTA: photo=null (sin URL)`);
       return res.json({ photo: null });
     }
 
-    console.log(`[myphoto] Descargando imagen desde URL...`);
     const https = require('https');
     const http = require('http');
     const client = photoUrl.startsWith('https') ? https : http;
     
     client.get(photoUrl, (imgRes) => {
-      console.log(`[myphoto] HTTP Response status: ${imgRes.statusCode}`);
       const chunks = [];
       imgRes.on('data', c => {
         chunks.push(c);
-        console.log(`[myphoto] Chunk recibido: ${c.length} bytes, total acumulado: ${chunks.reduce((a,b)=>a+b.length,0)} bytes`);
       });
       imgRes.on('end', async () => {
         let buf = Buffer.concat(chunks);
-        console.log(`[myphoto] Descarga completada: ${buf.length} bytes totales`);
         
         try {
-          console.log(`[myphoto] Procesando imagen con sharp (resize 28x28, circular, fondo verde)`);
           const sharp = require('sharp');
           const size = 28;
           const r = size / 2;
@@ -370,7 +340,6 @@ router.get('/myphoto/:userId', auth, async (req, res) => {
             .raw()
             .ensureAlpha()
             .toBuffer();
-          console.log(`[myphoto] Raw buffer creado: ${raw.length} bytes`);
           
           for (let y = 0; y < size; y++) {
             for (let x = 0; x < size; x++) {
@@ -381,33 +350,20 @@ router.get('/myphoto/:userId', auth, async (req, res) => {
               }
             }
           }
-          console.log(`[myphoto] Mascara circular aplicada (fondo verde)`);
           
           buf = await sharp(raw, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer();
-          console.log(`[myphoto] PNG convertido: ${buf.length} bytes`);
           
           const base64 = buf.toString('base64');
-          console.log(`[myphoto] Base64 generado: ${base64.length} chars`);
-          console.log(`[myphoto] RESPUESTA: photo=data:image/png;base64,${base64.substring(0, 50)}...`);
           
           res.json({ photo: 'data:image/png;base64,' + base64 });
         } catch (sharpErr) {
-          console.log(`[myphoto] ERROR sharp: ${sharpErr.message}`);
-          console.log(`[myphoto] Stack: ${sharpErr.stack}`);
-          console.log(`[myphoto] RESPUESTA: photo=null (sharp error)`);
           res.json({ photo: null });
         }
       });
     }).on('error', (httpErr) => {
-      console.log(`[myphoto] ERROR HTTP download: ${httpErr.message}`);
-      console.log(`[myphoto] Stack: ${httpErr.stack}`);
-      console.log(`[myphoto] RESPUESTA: photo=null (http error)`);
       res.json({ photo: null });
     });
   } catch (catchErr) {
-    console.log(`[myphoto] ERROR GENERAL: ${catchErr.message}`);
-    console.log(`[myphoto] Stack: ${catchErr.stack}`);
-    console.log(`[myphoto] RESPUESTA: photo=null (general error)`);
     res.json({ photo: null });
   }
 });
@@ -589,6 +545,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
   req.on('end', async () => {
     try {
       const audioBuffer = Buffer.concat(chunks);
+      console.log(`[sendaudio] REQUEST userId=${userId} chatId=${chatId} bytes=${audioBuffer.length}`);
       if (audioBuffer.length === 0) return res.status(400).json({ error: 'Audio vacio' });
       if (audioBuffer.length > 300 * 1024) return res.status(400).json({ error: 'Audio muy grande (max 300KB)' });
 
@@ -600,6 +557,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
       if (jid.endsWith('@lid') && session.lidCache && session.lidCache[jid]) {
         jid = session.lidCache[jid] + '@s.whatsapp.net';
       }
+      console.log(`[sendaudio] JID normalizado: ${jid}`);
 
       // Resolver JID canonico
       try {
@@ -636,6 +594,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
         try { fs.unlinkSync(tmpAmr); } catch (_) {}
         try { fs.unlinkSync(tmpOgg); } catch (_) {}
       }
+      console.log(`[sendaudio] Conversion AMR(${audioBuffer.length}B) -> OGG(${oggBuffer.length}B) dur=${durationSec}s`);
 
       // Enviar audio como PTT (nota de voz) con OGG/Opus
       const sent = await session.sock.sendMessage(jid, {
@@ -644,7 +603,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
         ptt: true,
         seconds: durationSec || 1,
       });
-      console.log('[sendaudio] OK, id:', sent?.key?.id, 'jid:', jid, 'duration:', durationSec);
+      console.log(`[sendaudio] ENVIADO ok msgId=${sent?.key?.id} jid=${jid}`);
 
       const msgId = sent?.key?.id || ('voice_' + Date.now());
       const ts = Math.floor(Date.now() / 1000);
@@ -654,6 +613,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
         const mediaDir = fspath.join(process.env.SESSIONS_DIR || './sessions', userId, 'media');
         fs.mkdirSync(mediaDir, { recursive: true });
         fs.writeFileSync(fspath.join(mediaDir, msgId + '.ogg'), oggBuffer);
+        console.log(`[sendaudio] OGG guardado en disco: ${msgId}.ogg (${oggBuffer.length}B)`);
       } catch (_) {}
 
       // Guardar en DB
@@ -671,6 +631,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
       res.json({ ok: true, id: msgId });
     } catch (err) {
       console.error('[sendaudio] Error:', err.message);
+      if (err && err.stack) console.error('[sendaudio] Stack:', err.stack);
       res.status(500).json({ error: 'Error enviando audio: ' + err.message });
     }
   });
@@ -685,90 +646,64 @@ router.get('/contactphoto/:userId/:chatId', auth, async (req, res) => {
   const accessCode = req.query.code || req.headers['x-access-code'];
   const full = req.query.full === '1'; // si full=1, devolver foto sin recortar
   
-  console.log(`[contactphoto] INICIO REQUEST`);
-  console.log(`[contactphoto] userId: ${userId}`);
-  console.log(`[contactphoto] chatId (raw): ${chatIdParam}`);
-  console.log(`[contactphoto] accessCode: ${accessCode ? '***' : 'NULL'}`);
-  console.log(`[contactphoto] full: ${full}`);
   
   const session = getSession(userId);
-  console.log(`[contactphoto] Session found: ${!!session}`);
-  console.log(`[contactphoto] Session.sock active: ${!!session?.sock}`);
   
   if (!session?.sock) {
-    console.log(`[contactphoto] ERROR: No hay sesion o socket inactivo`);
     return res.json({ photo: null, error: 'No socket' });
   }
   
   let jid = chatIdParam;
-  console.log(`[contactphoto] JID normalizacion - inicio: ${jid}`);
   
   if (!jid.includes('@')) {
     jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
-    console.log(`[contactphoto] JID normalizacion - sin @, nuevo: ${jid}`);
   }
   
   if (jid.endsWith('@lid') && session.lidCache?.[jid]) {
     const originalJid = jid;
     jid = session.lidCache[jid] + '@s.whatsapp.net';
-    console.log(`[contactphoto] JID normalizacion - @lid a @s.whatsapp.net: ${originalJid} -> ${jid}`);
   } else if (jid.endsWith('@lid')) {
-    console.log(`[contactphoto] JID termina con @lid pero NO esta en lidCache`);
   }
   
-  console.log(`[contactphoto] JID final para profilePictureUrl: ${jid}`);
   
   try {
     // Timeout de 8s para evitar bug #2498 de Baileys
     let photoUrl = null;
     try {
-      console.log(`[contactphoto] Llamando session.sock.profilePictureUrl(${jid})`);
       const picType = full ? 'image' : 'preview';
       photoUrl = await Promise.race([
         session.sock.profilePictureUrl(jid, picType),
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
       ]);
-      console.log(`[contactphoto] profilePictureUrl OK: ${photoUrl?.substring(0, 80)}...`);
     } catch (e) {
-      console.log(`[contactphoto] profilePictureUrl ERROR: ${e.message}`);
-      console.log(`[contactphoto] Error stack: ${e.stack}`);
     }
     
     if (!photoUrl) {
-      console.log(`[contactphoto] RESPUESTA: photo=null (sin URL)`);
       return res.json({ photo: null });
     }
 
-    console.log(`[contactphoto] Descargando imagen desde URL...`);
     const https = require('https');
     const http = require('http');
     const client = photoUrl.startsWith('https') ? https : http;
     
     client.get(photoUrl, (imgRes) => {
-      console.log(`[contactphoto] HTTP Response status: ${imgRes.statusCode}`);
       const chunks = [];
       imgRes.on('data', c => {
         chunks.push(c);
-        console.log(`[contactphoto] Chunk recibido: ${c.length} bytes, total acumulado: ${chunks.reduce((a,b)=>a+b.length,0)} bytes`);
       });
       imgRes.on('end', async () => {
         let buf = Buffer.concat(chunks);
-        console.log(`[contactphoto] Descarga completada: ${buf.length} bytes totales`);
         try {
           const sharp = require('sharp');
           if (full) {
             // Foto completa: redimensionar a 240x320 (pantalla Nokia) con cover para llenar
-            console.log(`[contactphoto] Procesando imagen FULL (240x320 cover)`);
             buf = await sharp(buf)
               .resize(240, 320, { fit: 'cover', position: 'centre' })
               .jpeg({ quality: 80 })
               .toBuffer();
-            console.log(`[contactphoto] JPEG full: ${buf.length} bytes`);
             const base64full = buf.toString('base64');
-            console.log(`[contactphoto] RESPUESTA full: photo=data:image/jpeg;base64,...`);
             return res.json({ photo: 'data:image/jpeg;base64,' + base64full });
           }
-          console.log(`[contactphoto] Procesando imagen con sharp (resize 30x30, circular, fondo gris)`);
           const size = 30;
           const r = size / 2;
           const raw = await sharp(buf)
@@ -776,7 +711,6 @@ router.get('/contactphoto/:userId/:chatId', auth, async (req, res) => {
             .raw()
             .ensureAlpha()
             .toBuffer();
-          console.log(`[contactphoto] Raw buffer creado: ${raw.length} bytes`);
           
           // Color fondo verde del header para avatar contacto (0x075E54)
           for (let y = 0; y < size; y++) {
@@ -788,33 +722,20 @@ router.get('/contactphoto/:userId/:chatId', auth, async (req, res) => {
               }
             }
           }
-          console.log(`[contactphoto] Mascara circular aplicada`);
           
           buf = await sharp(raw, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer();
-          console.log(`[contactphoto] PNG convertido: ${buf.length} bytes`);
           
           const base64 = buf.toString('base64');
-          console.log(`[contactphoto] Base64 generado: ${base64.length} chars`);
-          console.log(`[contactphoto] RESPUESTA: photo=data:image/png;base64,${base64.substring(0, 50)}...`);
           
           res.json({ photo: 'data:image/png;base64,' + base64 });
         } catch (sharpErr) {
-          console.log(`[contactphoto] ERROR sharp: ${sharpErr.message}`);
-          console.log(`[contactphoto] Stack: ${sharpErr.stack}`);
-          console.log(`[contactphoto] RESPUESTA: photo=null (sharp error)`);
           res.json({ photo: null });
         }
       });
     }).on('error', (httpErr) => {
-      console.log(`[contactphoto] ERROR HTTP download: ${httpErr.message}`);
-      console.log(`[contactphoto] Stack: ${httpErr.stack}`);
-      console.log(`[contactphoto] RESPUESTA: photo=null (http error)`);
       res.json({ photo: null });
     });
   } catch (catchErr) {
-    console.log(`[contactphoto] ERROR GENERAL: ${catchErr.message}`);
-    console.log(`[contactphoto] Stack: ${catchErr.stack}`);
-    console.log(`[contactphoto] RESPUESTA: photo=null (general error)`);
     res.json({ photo: null });
   }
 });
@@ -851,7 +772,7 @@ router.get('/presence/:userId/:chatId', auth, async (req, res) => {
 router.get('/media/:userId/:messageId', auth, async (req, res) => {
   const session = getSession(req.params.userId);
   const { chatId } = req.query;
-  console.log('[media] Request - userId:', req.params.userId, 'messageId:', req.params.messageId, 'chatId:', chatId);
+  console.log(`[media] REQUEST msgId=${req.params.messageId} userId=${req.params.userId} chatId=${chatId}`);
 
   if (!chatId) return res.status(400).json({ error: 'Falta chatId' });
 
@@ -867,18 +788,19 @@ router.get('/media/:userId/:messageId', auth, async (req, res) => {
     const mp3Path = fspath.join(mediaDir, msgId + '.mp3');
 
     if (fs.existsSync(amrPath)) {
-      console.log('[media] Sirviendo AMR desde disco');
-      return res.json({ data: 'data:audio/amr;base64,' + fs.readFileSync(amrPath).toString('base64'), type: 'audio' });
+      const amrBuf = fs.readFileSync(amrPath);
+      console.log(`[media] AUDIO AMR msgId=${msgId} bytes=${amrBuf.length} en base64`);
+      return res.json({ data: 'data:audio/amr;base64,' + amrBuf.toString('base64'), type: 'audio' });
     }
     if (fs.existsSync(mp3Path)) {
-      console.log('[media] Sirviendo MP3 desde disco');
       const buf = fs.readFileSync(mp3Path);
+      console.log(`[media] AUDIO MP3 msgId=${msgId} bytes=${buf.length}`);
       if (buf.length > 300 * 1024) return res.json({ error: 'Audio muy grande', tooLarge: true });
       return res.json({ data: 'data:audio/mpeg;base64,' + buf.toString('base64'), type: 'audio' });
     }
     if (fs.existsSync(oggPath)) {
-      console.log('[media] Sirviendo OGG desde disco, intentando conversion...');
       const buf = fs.readFileSync(oggPath);
+      console.log(`[media] AUDIO OGG msgId=${msgId} bytes=${buf.length}, convirtiendo a MP3...`);
       if (buf.length > 300 * 1024) return res.json({ error: 'Audio muy grande', tooLarge: true });
       try {
         const { execSync } = require('child_process');
@@ -886,8 +808,10 @@ router.get('/media/:userId/:messageId', auth, async (req, res) => {
         execSync(`"${ffmpegBin}" -y -i "${oggPath}" -af "volume=2.5" -ar 22050 -ac 1 -b:a 32k "${mp3Path}"`, { timeout: 15000 });
         const mp3Buf = fs.readFileSync(mp3Path);
         if (mp3Buf.length > 300 * 1024) return res.json({ error: 'Audio muy grande', tooLarge: true });
+        console.log(`[media] AUDIO OGG->MP3 ok msgId=${msgId} bytes=${mp3Buf.length}`);
         return res.json({ data: 'data:audio/mpeg;base64,' + mp3Buf.toString('base64'), type: 'audio' });
-      } catch (_) {
+      } catch (convErr) {
+        console.log(`[media] AUDIO OGG->MP3 fallo, devolviendo OGG:`, convErr.message);
         return res.json({ data: 'data:audio/ogg;base64,' + buf.toString('base64'), type: 'audio' });
       }
     }
@@ -895,7 +819,6 @@ router.get('/media/:userId/:messageId', auth, async (req, res) => {
     // --- IMAGEN: buscar en disco ---
     const jpgPath = fspath.join(mediaDir, msgId + '.jpg');
     if (fs.existsSync(jpgPath)) {
-      console.log('[media] Sirviendo imagen desde disco');
       let buffer = fs.readFileSync(jpgPath);
       try {
         const sharp = require('sharp');

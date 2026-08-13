@@ -128,13 +128,7 @@ function send(socket, obj) {
 function push(userId, obj) {
   const socket = clients.get(userId);
   if (!socket) {
-    if (obj.type === 'msg') console.log(`[tcp] push msg sin socket activo para ${userId}, chatId=${obj.chatId}, msgId=${obj.msgId}`);
     return false;
-  }
-  if (obj.type === 'msg') {
-    console.log(`[tcp] push msg → ${userId} chatId=${obj.chatId} msgId=${obj.msgId} fromMe=${obj.fromMe} text="${obj.text ? obj.text.substring(0,20) : ''}"`);
-  } else if (obj.type === 'ack') {
-    console.log(`[tcp] push ack → ${userId} chatId=${obj.chatId} msgId=${obj.msgId} status=${obj.status}`);
   }
   return send(socket, obj);
 }

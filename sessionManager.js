@@ -221,7 +221,6 @@ async function processOutbox(userId, sock) {
         if (wa?.exists && wa?.jid) jid = wa.jid;
       } catch (_) {}
       await sock.sendMessage(jid, { text: item.message });
-      console.log(`[outbox] Enviado a ${jid}`);
     } catch (e) {
       remaining.push({ ...item, retries: (item.retries || 0) + 1 });
       console.log(`[outbox] Error con ${item.jid}, reintento ${(item.retries || 0) + 1}`);
@@ -381,7 +380,6 @@ async function createSession(userId) {
 
   // Capturar contactos de la agenda cuando Baileys los sincroniza
   sock.ev.on('contacts.upsert', (contacts) => {
-    console.log('[contacts.upsert] recibidos:', contacts.length);
     for (const c of contacts) {
       if (c.id) {
         entry.contacts[c.id] = c;
@@ -486,12 +484,10 @@ async function createSession(userId) {
           if (!entry.lidCache[lid]) {
             entry.lidCache[lid] = barePn;
             saveLidCache(userId, entry.lidCache);
-            console.log(`[history] Mapeo LID ${lid} → ${barePn} (del historial)`);
           }
         }
       }
     }
-    console.log(`[history] ${chats.length} chats recibidos`);
     for (const chat of chats) {
       const normId = (chat.id.endsWith('@lid') && entry.lidCache[chat.id])
         ? entry.lidCache[chat.id] + '@s.whatsapp.net'
@@ -516,7 +512,6 @@ async function createSession(userId) {
       const newLastMsg = prev?.lastMessage || '';
       const rawTs = chat.conversationTimestamp;
       const newTimestamp = prev?.lastTimestamp || toMs(rawTs);
-      console.log(`[history] Chat ${normId}: name="${name}", ts=${newTimestamp}, rawTs=${JSON.stringify(rawTs)}, lastMsg="${newLastMsg}"`);
       dbUpsertChat(userId, normId, name, newLastMsg, newTimestamp, prev?.unreadCount || 0);
       if (chat.id.endsWith('@lid')) tryResolveLid(chat.id);
     }
@@ -533,7 +528,6 @@ async function createSession(userId) {
         : chatId;
 
       // Log de todo lo que llega, antes de cualquier filtro
-      console.log('[msg] raw:', normId, 'fromMe:', msg.key.fromMe, 'keys:', Object.keys(msg.message || {}).join(','), 'pushName:', msg.pushName);
 
       // Ignorar solo mensajes completamente vacios (sin message object)
       if (!msg.message) continue;
@@ -581,7 +575,6 @@ async function createSession(userId) {
         || msg.message?.documentMessage;
       if (msg.message?.reactionMessage || msg.message?.protocolMessage
           || (msg.message?.senderKeyDistributionMessage && !hasRealContent)) {
-        console.log('[msg] ignorado (protocolo/reaccion):', normId);
         continue;
       }
 
@@ -605,13 +598,14 @@ async function createSession(userId) {
       if ((isImage || isSticker || isAudio || isDoc) && msg.key.id) {
         (async () => {
           try {
+            console.log(`[media] Descargando msgId=${msg.key.id} tipo=${isAudio ? 'audio' : isImage ? 'imagen' : isSticker ? 'sticker' : 'doc'} chatId=${normId}`);
             const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
             const mediaDir = path.join(SESSIONS_DIR, userId, 'media');
             fs.mkdirSync(mediaDir, { recursive: true });
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
+            console.log(`[media] Descargado msgId=${msg.key.id} bytes=${buffer.length}`);
             if (isImage) {
               fs.writeFileSync(path.join(mediaDir, msg.key.id + '.jpg'), buffer);
-              console.log(`[media] Imagen guardada: ${msg.key.id}.jpg (${buffer.length} bytes)`);
             } else if (isSticker) {
               // Convertir .webp a .jpg para compatibilidad con J2ME
               try {
@@ -621,20 +615,17 @@ async function createSession(userId) {
                   .jpeg({ quality: 80 })
                   .toBuffer();
                 fs.writeFileSync(path.join(mediaDir, msg.key.id + '.jpg'), jpgBuffer);
-                console.log(`[media] Sticker guardado como JPG: ${msg.key.id}.jpg (${jpgBuffer.length} bytes)`);
               } catch (sharpErr) {
                 // Si sharp falla, guardar webp de todas formas (fallback)
                 fs.writeFileSync(path.join(mediaDir, msg.key.id + '.jpg'), buffer);
-                console.log(`[media] Sticker guardado (sin conversión): ${msg.key.id}.jpg`);
               }
             } else if (isDoc) {
               // Guardar con nombre original para que el navegador lo descargue bien
               const safeFileName = (docFileName || 'doc').replace(/[^a-zA-Z0-9._-]/g, '_');
               fs.writeFileSync(path.join(mediaDir, msg.key.id + '_' + safeFileName), buffer);
-              console.log(`[media] Documento guardado: ${msg.key.id}_${safeFileName} (${buffer.length} bytes)`);
             } else {
               fs.writeFileSync(path.join(mediaDir, msg.key.id + '.ogg'), buffer);
-              console.log(`[media] Audio guardado: ${msg.key.id}.ogg (${buffer.length} bytes)`);
+              console.log(`[media] AUDIO guardado: ${msg.key.id}.ogg (${buffer.length} bytes)`);
             }
           } catch (e) {
             console.log(`[media] Error descargando media ${msg.key.id}:`, e.message);
@@ -666,7 +657,6 @@ async function createSession(userId) {
         finalName = 'No conocido';
       }
 
-      console.log(`[msg] Chat actualizado: ${normId}, name="${finalName}", lastMsg="${finalLast}", ts=${msgTs}`);
       await dbUpsertChat(userId, normId, finalName,
         isImage ? '[imagen]' : isSticker ? '[sticker]' : isAudio ? '[audio]' : isDoc ? ('[doc:' + docFileName + ']') : (text || ''),
         msgTs, newUnread);
@@ -726,8 +716,6 @@ async function createSession(userId) {
   sock.ev.on('messages.update', (updates) => {
     for (const update of updates) {
       let chatId = update.key.remoteJid;
-      console.log('[ack] update:', update.key.id, 'status:', update.update?.status, 'chatId:', chatId);
-      console.log('[ack] lidCache lookup:', chatId, '->', entry.lidCache[chatId]);
       if (!chatId || !update.update?.status) continue;
       if (chatId.endsWith('@lid') && entry.lidCache[chatId]) {
         chatId = entry.lidCache[chatId] + '@s.whatsapp.net';
@@ -739,7 +727,6 @@ async function createSession(userId) {
         'UPDATE messages SET ack=? WHERE userId=? AND chatId=? AND messageId=? AND ack < ?',
         [ackStatus, userId, chatId, msgId, ackStatus]
       ).then(result => {
-        console.log('[ack] affectedRows:', result?.affectedRows, 'result:', JSON.stringify(result));
         if (result.affectedRows === 0) {
           setTimeout(() => {
             db.query(
