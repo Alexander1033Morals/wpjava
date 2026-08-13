@@ -604,12 +604,18 @@ router.post('/sendaudio/:userId', async (req, res) => {
       console.log(`[sendaudio] Conversion AMR(${audioBuffer.length}B) -> OGG(${oggBuffer.length}B) dur=${durationSec}s`);
       console.log(`[sendaudio] tmpOgg existe antes de enviar: ${fs.existsSync(tmpOgg)}`);
 
+      // Generar waveform manualmente (getAudioWaveform del propio Baileys)
+      const { getAudioWaveform } = require('@whiskeysockets/baileys');
+      const waveform = await getAudioWaveform(oggBuffer);
+      console.log(`[sendaudio] Waveform generado: ${waveform ? waveform.length + ' bytes' : 'NULL/vacío'}`);
+
       // Enviar audio como PTT (nota de voz) con OGG/Opus desde archivo en disco
       const sent = await session.sock.sendMessage(jid, {
         audio: { url: tmpOgg },
         mimetype: 'audio/ogg; codecs=opus',
         ptt: true,
         seconds: durationSec || 1,
+        waveform: waveform,
       });
       console.log(`[sendaudio] Enviado con audio:{url} — verificar Android/duración/waveform en la prueba`);
       console.log(`[sendaudio] ENVIADO ok msgId=${sent?.key?.id} jid=${jid}`);
