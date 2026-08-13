@@ -600,18 +600,20 @@ router.post('/sendaudio/:userId', async (req, res) => {
         oggBuffer = audioBuffer;
       } finally {
         try { fs.unlinkSync(tmpAmr); } catch (_) {}
-        try { fs.unlinkSync(tmpOgg); } catch (_) {}
       }
       console.log(`[sendaudio] Conversion AMR(${audioBuffer.length}B) -> OGG(${oggBuffer.length}B) dur=${durationSec}s`);
+      console.log(`[sendaudio] tmpOgg existe antes de enviar: ${fs.existsSync(tmpOgg)}`);
 
-      // Enviar audio como PTT (nota de voz) con OGG/Opus
+      // Enviar audio como PTT (nota de voz) con OGG/Opus desde archivo en disco
       const sent = await session.sock.sendMessage(jid, {
-        audio: oggBuffer,
+        audio: { url: tmpOgg },
         mimetype: 'audio/ogg; codecs=opus',
         ptt: true,
         seconds: durationSec || 1,
       });
+      console.log(`[sendaudio] Enviado con audio:{url} — verificar Android/duración/waveform en la prueba`);
       console.log(`[sendaudio] ENVIADO ok msgId=${sent?.key?.id} jid=${jid}`);
+      try { fs.unlinkSync(tmpOgg); } catch (_) {}
 
       const msgId = sent?.key?.id || ('voice_' + Date.now());
       const ts = Math.floor(Date.now() / 1000);
