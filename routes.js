@@ -604,10 +604,45 @@ router.post('/sendaudio/:userId', async (req, res) => {
       console.log(`[sendaudio] Conversion AMR(${audioBuffer.length}B) -> OGG(${oggBuffer.length}B) dur=${durationSec}s`);
       console.log(`[sendaudio] tmpOgg existe antes de enviar: ${fs.existsSync(tmpOgg)}`);
 
-      // Generar waveform manualmente (getAudioWaveform del propio Baileys)
+      // Generar waveform (getAudioWaveform de Baileys con fallback manual via ffmpeg)
       const { getAudioWaveform } = require('@whiskeysockets/baileys');
-      const waveform = await getAudioWaveform(oggBuffer);
-      console.log(`[sendaudio] Waveform generado: ${waveform ? waveform.length + ' bytes' : 'NULL/vacío'}`);
+      let waveform = null;
+      try {
+        waveform = await getAudioWaveform(oggBuffer);
+        console.log(`[sendaudio] Waveform OK: ${waveform ? waveform.length + ' bytes' : 'NULL (sin error, pero vacío)'}`);
+      } catch (err) {
+        console.error(`[sendaudio] Waveform ERROR:`, err.message);
+        console.error(`[sendaudio] Waveform Stack:`, err.stack);
+      }
+
+      // Fallback: si Baileys no pudo generar el waveform, generarlo manualmente con ffmpeg
+      if (!waveform) {
+        try {
+          const { execSync } = require('child_process');
+          const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
+          const pcmOut = execSync(`"${ffmpegBin}" -i "${tmpOgg}" -f s16le -ac 1 -ar 8000 -`, { maxBuffer: 1024 * 1024 * 10 });
+          const samples = pcmOut.length / 2;
+          const numPoints = 64;
+          const blockSize = Math.floor(samples / numPoints);
+          const wf = [];
+          for (let i = 0; i < numPoints; i++) {
+            let sum = 0;
+            for (let j = 0; j < blockSize; j++) {
+              const idx = (i * blockSize + j) * 2;
+              if (idx + 1 < pcmOut.length) {
+                const sample = pcmOut.readInt16LE(idx);
+                sum += Math.abs(sample);
+              }
+            }
+            const avg = sum / blockSize;
+            wf.push(Math.min(255, Math.floor((avg / 32768) * 255)));
+          }
+          waveform = Buffer.from(wf);
+          console.log(`[sendaudio] Waveform generado manualmente con ffmpeg: ${waveform.length} bytes`);
+        } catch (manualErr) {
+          console.error(`[sendaudio] Waveform manual ERROR:`, manualErr.message);
+        }
+      }
 
       // Enviar audio como PTT (nota de voz) con OGG/Opus desde archivo en disco
       const sent = await session.sock.sendMessage(jid, {
@@ -615,7 +650,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
         mimetype: 'audio/ogg; codecs=opus',
         ptt: true,
         seconds: durationSec || 1,
-        waveform: waveform,
+        waveform: waveform || undefined,
       });
       console.log(`[sendaudio] Enviado con audio:{url} — verificar Android/duración/waveform en la prueba`);
       console.log(`[sendaudio] ENVIADO ok msgId=${sent?.key?.id} jid=${jid}`);
