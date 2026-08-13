@@ -267,11 +267,14 @@ function activeCount() {
 }
 
 async function createSession(userId) {
+  console.log(`[link] createSession INICIO userId=${userId}`);
   if (sessions.has(userId)) {
+    console.log(`[link] createSession ya existia userId=${userId}`);
     return sessions.get(userId);
   }
 
   if (activeCount() >= MAX_CONCURRENT_SESSIONS) {
+    console.log(`[link] LIMIT_REACHED userId=${userId}`);
     throw new Error('LIMIT_REACHED');
   }
 
@@ -280,7 +283,9 @@ async function createSession(userId) {
 
   const baileys = await B();
   const { state, saveCreds } = await baileys.useMultiFileAuthState(userDir);
+  console.log(`[link] Auth state cargado userId=${userId}, hay creds=${!!state.creds?.me}`);
   const { version } = await baileys.fetchLatestWaWebVersion();
+  console.log(`[link] Version WA: ${version.join('.')}`);
   const sock = baileys.default({
     version,
     auth: state,
@@ -305,15 +310,18 @@ async function createSession(userId) {
     saveCreds,
   };
   sessions.set(userId, entry);
+  console.log(`[link] Entrada creada, status=connecting userId=${userId}`);
 
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
+    console.log(`[link] connection.update userId=${userId} connection=${connection} qr=${qr ? 'SI' : 'NO'} isNewLogin=${update.isNewLogin}`);
 
     if (qr) {
       entry.qr = await QRCode.toDataURL(qr);
       entry.status = 'waiting_qr';
+      console.log(`[link] QR generado userId=${userId} (dataURL ${entry.qr.length} chars)`);
     }
 
     if (connection === 'open') {
@@ -361,6 +369,7 @@ async function createSession(userId) {
       const loggedOut = statusCode === baileys.DisconnectReason.loggedOut;
 
       console.log(`[session] ${userId} connection=close, loggedOut=${loggedOut}, statusCode=${statusCode}`);
+      console.log(`[link] error en disconnect:`, lastDisconnect?.error?.message || 'ninguno');
 
       if (loggedOut) {
         sessions.delete(userId);
@@ -369,6 +378,7 @@ async function createSession(userId) {
         console.log(`[session] ${userId} cerro sesion, datos eliminados`);
       } else {
         entry.status = 'reconnecting';
+        console.log(`[link] Reintentando en 3s userId=${userId}`);
         console.log(`[session] ${userId} desconectado, reintentando...`);
         setTimeout(() => {
           sessions.delete(userId);

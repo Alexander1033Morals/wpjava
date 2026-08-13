@@ -12,11 +12,14 @@ const router = express.Router();
 
 router.post('/link', async (req, res) => {
   const userId = uuidv4();
+  console.log(`[link] Request: creando sesion userId=${userId}`);
   try {
     await createSession(userId);
+    console.log(`[link] Sesion creada userId=${userId}`);
     res.json({ userId, message: 'Sesion creada.' });
   } catch (err) {
     if (err.message === 'LIMIT_REACHED') {
+      console.log(`[link] LIMIT_REACHED userId=${userId}`);
       return res.status(503).json({ error: 'La aplicacion esta en modo beta y ya alcanzo el limite de usuarios registrados. Intenta mas tarde.' });
     }
     console.error(err);
@@ -26,7 +29,12 @@ router.post('/link', async (req, res) => {
 
 router.get('/status/:userId', (req, res) => {
   const session = getSession(req.params.userId);
-  if (!session) return res.status(404).json({ error: 'Sesion no encontrada' });
+  if (!session) {
+    console.log(`[status] Poll userId=${req.params.userId} -> SESION NO ENCONTRADA`);
+    return res.status(404).json({ error: 'Sesion no encontrada' });
+  }
+  const hasQr = session.status === 'waiting_qr' && !!session.qr;
+  console.log(`[status] Poll userId=${req.params.userId} -> status=${session.status} qr=${hasQr ? 'SI' : 'NO'}`);
   res.json({
     status: session.status,
     qr: session.status === 'waiting_qr' ? session.qr : null,
@@ -578,7 +586,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
       try {
         const { execSync } = require('child_process');
         const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
-        execSync(`"${ffmpegBin}" -y -i "${tmpAmr}" -avoid_negative_ts make_zero -ac 1 -c:a libopus "${tmpOgg}"`, { timeout: 20000 });
+        execSync(`"${ffmpegBin}" -y -i "${tmpAmr}" -avoid_negative_ts make_zero -ar 16000 -ac 1 -c:a libopus "${tmpOgg}"`, { timeout: 20000 });
         oggBuffer = fs.readFileSync(tmpOgg);
         // Calcular duracion aproximada del audio original
         const durationOut = execSync(`"${ffmpegBin}" -i "${tmpAmr}" 2>&1 || true`).toString();
