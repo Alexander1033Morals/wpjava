@@ -129,8 +129,8 @@ router.get('/chats/:userId', auth, async (req, res) => {
       `SELECT chatId AS id, name, lastMessage, lastTimestamp, unreadCount
        FROM chats WHERE userId=?
        AND (name != 'No conocido' OR (lastMessage IS NOT NULL AND lastMessage != ''))
-       ORDER BY lastTimestamp DESC LIMIT ? OFFSET ?`,
-      [req.params.userId, pageSize, offset]
+       ORDER BY lastTimestamp DESC LIMIT ${pageSize} OFFSET ${offset}`,
+      [req.params.userId]
     );
     const countRows = await require('./db').query(
       `SELECT COUNT(*) AS total FROM chats WHERE userId=?
@@ -206,8 +206,8 @@ router.get('/messages/:userId/:chatId', auth, async (req, res) => {
     const messages = await db.query(
       `SELECT messageId AS id, fromMe, text, type, timestamp, pushName, ack, quoted
        FROM messages WHERE userId=? AND chatId=?
-       ORDER BY timestamp ASC LIMIT ? OFFSET ?`,
-      [req.params.userId, normChatId, limit, offset]
+       ORDER BY timestamp ASC LIMIT ${limit} OFFSET ${offset}`,
+      [req.params.userId, normChatId]
     );
     // Convertir fromMe de tinyint a boolean
     const mapped = messages.map(m => ({ ...m, fromMe: !!m.fromMe, pushName: sanitizeForJ2ME(m.pushName) }));
