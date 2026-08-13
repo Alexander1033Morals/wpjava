@@ -586,7 +586,7 @@ router.post('/sendaudio/:userId', async (req, res) => {
       try {
         const { execSync } = require('child_process');
         const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
-        execSync(`"${ffmpegBin}" -y -i "${tmpAmr}" -avoid_negative_ts make_zero -ar 16000 -ac 1 -c:a libopus "${tmpOgg}"`, { timeout: 20000 });
+        execSync(`"${ffmpegBin}" -y -i "${tmpAmr}" -avoid_negative_ts make_zero -ar 48000 -ac 1 -c:a libopus -b:a 32k -application voip -frame_duration 20 "${tmpOgg}"`, { timeout: 20000 });
         oggBuffer = fs.readFileSync(tmpOgg);
         // Calcular duracion aproximada del audio original
         const durationOut = execSync(`"${ffmpegBin}" -i "${tmpAmr}" 2>&1 || true`).toString();
