@@ -4,17 +4,23 @@
   "description": "Backend WPJava - puente WhatsApp (Baileys) para Nokia J2ME",
   "main": "src/server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc13",
-    "express": "^4.19.2",
-    "qrcode": "^1.5.3",
-    "uuid": "^9.0.1",
     "dotenv": "^16.4.5",
-    "pino": "^9.0.0"
+    "express": "^4.19.2",
+    "mysql2": "^3.23.2",
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.3",
+    "sharp": "^0.35.3",
+    "uuid": "^9.0.1"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
   }
 }

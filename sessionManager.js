@@ -2,6 +2,8 @@ const path = require('path');
 const fs = require('fs');
 const QRCode = require('qrcode');
 const pino = require('pino');
+const db = require('./db');
+const tcpServer = require('./tcpServer');
 let _baileys = null;
 async function B() {
   if (!_baileys) _baileys = await import('@whiskeysockets/baileys');
@@ -30,6 +32,61 @@ function toMs(ts) {
   // Si ya viene en ms (>1e12) no multiplicar
   return n > 1e12 ? n : n * 1000;
 }
+
+// ---- DB helpers ----
+
+async function dbUpsertSession(userId, accessCode, status) {
+  try {
+    await db.query(
+      `INSERT INTO sessions (userId, accessCode, status, lastActivity)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE accessCode=VALUES(accessCode), status=VALUES(status), lastActivity=VALUES(lastActivity)`,
+      [userId, accessCode, status, Date.now()]
+    );
+  } catch (_) {}
+}
+
+async function dbUpsertChat(userId, chatId, name, lastMessage, lastTimestamp, unreadCount) {
+  try {
+    await db.query(
+      `INSERT INTO chats (userId, chatId, name, lastMessage, lastTimestamp, unreadCount)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE name=VALUES(name), lastMessage=VALUES(lastMessage),
+         lastTimestamp=VALUES(lastTimestamp), unreadCount=VALUES(unreadCount)`,
+      [userId, chatId, name || 'No conocido', lastMessage || '', lastTimestamp || 0, unreadCount || 0]
+    );
+  } catch (_) {}
+}
+
+async function dbInsertMessage(userId, chatId, msgEntry) {
+  try {
+    await db.query(
+      `INSERT IGNORE INTO messages (userId, chatId, messageId, fromMe, text, type, timestamp, pushName, ack, quoted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, chatId, msgEntry.id, msgEntry.fromMe ? 1 : 0,
+       msgEntry.text || '', msgEntry.type || 'text',
+       msgEntry.timestamp || 0, msgEntry.pushName || null, msgEntry.ack || 0,
+       msgEntry.quotedText || null]
+    );
+  } catch (_) {}
+}
+
+async function dbDeleteSession(userId) {
+  try {
+    await db.query('DELETE FROM sessions WHERE userId=?', [userId]);
+    await db.query('DELETE FROM chats WHERE userId=?', [userId]);
+    await db.query('DELETE FROM messages WHERE userId=?', [userId]);
+  } catch (_) {}
+}
+
+async function dbGetAccessCode(userId) {
+  try {
+    const rows = await db.query('SELECT accessCode FROM sessions WHERE userId=?', [userId]);
+    return rows[0]?.accessCode || null;
+  } catch (_) { return null; }
+}
+
+// ---- fin DB helpers ----
 
 function cleanId(jid) {
   if (!jid) return jid;
@@ -175,9 +232,10 @@ async function processOutbox(userId, sock) {
   } catch (_) {}
 }
 
-function cleanupMedia(days) {
+function cleanupMedia(imageDays, audioDays) {
   const dirs = [DATA_DIR, SESSIONS_DIR];
-  const limit = Date.now() - days * 24 * 60 * 60 * 1000;
+  const imgLimit   = Date.now() - imageDays * 24 * 60 * 60 * 1000;
+  const audioLimit = Date.now() - audioDays  * 24 * 60 * 60 * 1000;
   for (const baseDir of dirs) {
     if (!fs.existsSync(baseDir)) continue;
     const walk = (dir) => {
@@ -185,10 +243,11 @@ function cleanupMedia(days) {
         for (const e of fs.readdirSync(dir)) {
           const full = path.join(dir, e);
           if (fs.statSync(full).isDirectory()) { walk(full); continue; }
-          if (full.endsWith('.ogg') || full.endsWith('.mp3') || full.endsWith('.amr') || full.endsWith('.jpg') || full.endsWith('.jpeg') || full.endsWith('.png')) {
-            if (fs.statSync(full).mtimeMs < limit) {
-              fs.unlinkSync(full);
-            }
+          const mtime = fs.statSync(full).mtimeMs;
+          if (full.endsWith('.jpg') || full.endsWith('.jpeg') || full.endsWith('.png')) {
+            if (mtime < imgLimit) fs.unlinkSync(full);
+          } else if (full.endsWith('.ogg') || full.endsWith('.mp3') || full.endsWith('.amr')) {
+            if (mtime < audioLimit) fs.unlinkSync(full);
           }
         }
       } catch (_) {}
@@ -232,34 +291,17 @@ async function createSession(userId) {
 
   const savedMeta = loadMeta(userId);
   const lidCache = loadLidCache(userId);
-  const { chats: cachedChats, messages: cachedMessages } = loadChatsCache(userId);
-  // Combinar mensajes del inbox persistente (no se borra al reconectar)
-  const inboxMessages = loadInbox(userId);
-  for (const [cid, imsgs] of inboxMessages.entries()) {
-    const existing = cachedMessages.get(cid) || [];
-    const merged = [...existing];
-    for (const im of imsgs) {
-      const idx = merged.findIndex(m => m.id === im.id);
-      if (idx >= 0) {
-        merged[idx] = im;
-      } else {
-        merged.push(im);
-      }
-    }
-    cachedMessages.set(cid, merged.slice(-10));
-  }
+  const dbCode = await dbGetAccessCode(userId);
 
   const entry = {
     sock,
-    contacts: {}, // contactos capturados manualmente
+    contacts: {},
     lidCache,
     status: 'connecting',
     qr: null,
-    accessCode: savedMeta.accessCode || null,
-    chats: cachedChats,
-    messages: cachedMessages,
-    presence: new Map(), // chatId -> { typing: bool, timestamp }
-    myPhotoUrl: null,    // foto de perfil propia
+    accessCode: savedMeta.accessCode || dbCode || null,
+    presence: new Map(),
+    myPhotoUrl: null,
     lastActivity: Date.now(),
     saveCreds,
   };
@@ -283,6 +325,7 @@ async function createSession(userId) {
       }
       saveMeta(userId, entry.accessCode);
       console.log(`[session] ${userId} conectado, code: ${entry.accessCode}`);
+      await dbUpsertSession(userId, entry.accessCode, 'connected');
 
       // Sembrar lidCache desde signalRepository (mapeos ya conocidos por Baileys)
       try {
@@ -318,11 +361,12 @@ async function createSession(userId) {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = statusCode === baileys.DisconnectReason.loggedOut;
 
-      console.log(`[session] ${userId} connection=close, loggedOut=${loggedOut}, statusCode=${statusCode}, chats en memoria: ${entry.chats.size}`);
+      console.log(`[session] ${userId} connection=close, loggedOut=${loggedOut}, statusCode=${statusCode}`);
 
       if (loggedOut) {
         sessions.delete(userId);
         fs.rmSync(userDir, { recursive: true, force: true });
+        await dbDeleteSession(userId);
         console.log(`[session] ${userId} cerro sesion, datos eliminados`);
       } else {
         entry.status = 'reconnecting';
@@ -337,6 +381,7 @@ async function createSession(userId) {
 
   // Capturar contactos de la agenda cuando Baileys los sincroniza
   sock.ev.on('contacts.upsert', (contacts) => {
+    console.log('[contacts.upsert] recibidos:', contacts.length);
     for (const c of contacts) {
       if (c.id) {
         entry.contacts[c.id] = c;
@@ -348,22 +393,15 @@ async function createSession(userId) {
           lidCache[c.id] = c.phoneNumber.replace('@s.whatsapp.net', '');
           saveLidCache(userId, lidCache);
         }
-        
-        if (entry.chats.has(c.id)) {
-          const chat = entry.chats.get(c.id);
-          const newName = c.name || c.notify || chat.name;
-          if (newName && newName !== chat.name) {
-            chat.name = newName;
-            saveChatsCache(userId, entry.chats, entry.messages);
-          }
-        }
-        
-        if (c.lid && entry.chats.has(c.lid)) {
-          const chat = entry.chats.get(c.lid);
-          const newName = c.name || c.notify || chat.name;
-          if (newName && newName !== chat.name) {
-            chat.name = newName;
-            saveChatsCache(userId, entry.chats, entry.messages);
+
+        // Actualizar nombre en DB si existe el chat
+        const newName = c.name || c.notify;
+        if (newName) {
+          db.query('UPDATE chats SET name=? WHERE userId=? AND chatId=? AND (name="No conocido" OR name=?)',
+            [newName, userId, c.id, cleanId(c.id)]).catch(() => {});
+          if (c.lid) {
+            db.query('UPDATE chats SET name=? WHERE userId=? AND chatId=? AND (name="No conocido" OR name=?)',
+              [newName, userId, c.lid, cleanId(c.lid)]).catch(() => {});
           }
         }
       }
@@ -428,17 +466,16 @@ async function createSession(userId) {
       if (numero) {
         lidCache[jid] = numero;
         saveLidCache(userId, lidCache);
-        if (entry.chats.has(jid)) {
-          const chat = entry.chats.get(jid);
-          if (!chat.name || chat.name === cleanId(jid)) {
-            chat.name = numero;
-          }
-        }
+        // Actualizar nombre en DB si existía como LID
+        db.query(
+          'UPDATE chats SET chatId=? WHERE userId=? AND chatId=?',
+          [numero + '@s.whatsapp.net', userId, jid]
+        ).catch(() => {});
       }
     } catch (_) {}
   }
 
-  sock.ev.on('messaging-history.set', ({ chats, lidPnMappings }) => {
+  sock.ev.on('messaging-history.set', async ({ chats, lidPnMappings }) => {
     // Procesar mapeos LID→PN del historial ANTES de los chats
     if (lidPnMappings && Array.isArray(lidPnMappings)) {
       for (const m of lidPnMappings) {
@@ -459,27 +496,12 @@ async function createSession(userId) {
       const normId = (chat.id.endsWith('@lid') && entry.lidCache[chat.id])
         ? entry.lidCache[chat.id] + '@s.whatsapp.net'
         : chat.id;
-      if (normId !== chat.id) {
-        if (entry.chats.has(chat.id)) {
-          if (!entry.chats.has(normId)) {
-            entry.chats.set(normId, entry.chats.get(chat.id));
-          }
-          entry.chats.delete(chat.id);
-        }
-        if (entry.messages.has(chat.id)) {
-          if (entry.messages.has(normId)) {
-            const pnMsgs = entry.messages.get(normId);
-            for (const lm of entry.messages.get(chat.id)) {
-              if (!pnMsgs.find(m => m.id === lm.id)) pnMsgs.push(lm);
-            }
-            if (pnMsgs.length > 10) pnMsgs.splice(0, pnMsgs.length - 10);
-          } else {
-            entry.messages.set(normId, entry.messages.get(chat.id));
-          }
-          entry.messages.delete(chat.id);
-        }
-      }
-      const prev = entry.chats.get(normId);
+      // Obtener datos previos de DB
+      let prev = null;
+      try {
+        const rows = await db.query('SELECT * FROM chats WHERE userId=? AND chatId=?', [userId, normId]);
+        if (rows.length > 0) prev = rows[0];
+      } catch (_) {}
       const contactName = resolveName(normId);
       let name;
       if (contactName) {
@@ -495,18 +517,12 @@ async function createSession(userId) {
       const rawTs = chat.conversationTimestamp;
       const newTimestamp = prev?.lastTimestamp || toMs(rawTs);
       console.log(`[history] Chat ${normId}: name="${name}", ts=${newTimestamp}, rawTs=${JSON.stringify(rawTs)}, lastMsg="${newLastMsg}"`);
-      entry.chats.set(normId, {
-        name,
-        lastMessage: newLastMsg,
-        lastTimestamp: newTimestamp,
-        unreadCount: prev?.unreadCount || 0,
-      });
+      dbUpsertChat(userId, normId, name, newLastMsg, newTimestamp, prev?.unreadCount || 0);
       if (chat.id.endsWith('@lid')) tryResolveLid(chat.id);
     }
-    saveChatsCache(userId, entry.chats, entry.messages);
   });
 
-  sock.ev.on('messages.upsert', ({ messages }) => {
+  sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       const chatId = msg.key.remoteJid;
       if (!chatId) continue;
@@ -515,26 +531,6 @@ async function createSession(userId) {
       const normId = (chatId.endsWith('@lid') && entry.lidCache[chatId])
         ? entry.lidCache[chatId] + '@s.whatsapp.net'
         : chatId;
-      if (normId !== chatId) {
-        if (entry.chats.has(chatId)) {
-          if (!entry.chats.has(normId)) {
-            entry.chats.set(normId, entry.chats.get(chatId));
-          }
-          entry.chats.delete(chatId);
-        }
-        if (entry.messages.has(chatId)) {
-          if (entry.messages.has(normId)) {
-            const pnMsgs = entry.messages.get(normId);
-            for (const lm of entry.messages.get(chatId)) {
-              if (!pnMsgs.find(m => m.id === lm.id)) pnMsgs.push(lm);
-            }
-            if (pnMsgs.length > 10) pnMsgs.splice(0, pnMsgs.length - 10);
-          } else {
-            entry.messages.set(normId, entry.messages.get(chatId));
-          }
-          entry.messages.delete(chatId);
-        }
-      }
 
       // Log de todo lo que llega, antes de cualquier filtro
       console.log('[msg] raw:', normId, 'fromMe:', msg.key.fromMe, 'keys:', Object.keys(msg.message || {}).join(','), 'pushName:', msg.pushName);
@@ -545,57 +541,124 @@ async function createSession(userId) {
       const text =
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
+        msg.message?.imageMessage?.caption ||
         '[media]';
 
       const isImage = !!msg.message?.imageMessage;
       const isAudio = !!msg.message?.audioMessage;
+      const isDoc = !!msg.message?.documentMessage;
+      const isSticker = !!msg.message?.stickerMessage;
+      const docFileName = isDoc ? (msg.message.documentMessage.fileName || 'documento') : null;
+      const docMime = isDoc ? (msg.message.documentMessage.mimetype || 'application/octet-stream') : null;
+
+      // Extraer texto del mensaje citado (reply)
+      const contextInfo = msg.message?.extendedTextMessage?.contextInfo
+        || msg.message?.imageMessage?.contextInfo
+        || msg.message?.audioMessage?.contextInfo
+        || null;
+      let quotedText = null;
+      if (contextInfo?.quotedMessage) {
+        const qm = contextInfo.quotedMessage;
+        quotedText = qm.conversation
+          || qm.extendedTextMessage?.text
+          || (qm.imageMessage ? '[imagen]' : null)
+          || (qm.audioMessage ? '[audio]' : null)
+          || (qm.stickerMessage ? '[sticker]' : null)
+          || (qm.documentMessage ? '[doc]' : null)
+          || null;
+        if (quotedText && quotedText.length > 40) quotedText = quotedText.substring(0, 40);
+      }
 
       // Ignorar reacciones y mensajes de protocolo que no tienen contenido visible
-      if (msg.message?.reactionMessage || msg.message?.protocolMessage || msg.message?.senderKeyDistributionMessage) {
+      // senderKeyDistributionMessage es normal en grupos (clave de cifrado) y puede venir
+      // junto con conversation/extendedTextMessage — solo descartar si NO hay contenido real
+      const hasRealContent = msg.message?.conversation
+        || msg.message?.extendedTextMessage
+        || msg.message?.imageMessage
+        || msg.message?.audioMessage
+        || msg.message?.videoMessage
+        || msg.message?.stickerMessage
+        || msg.message?.documentMessage;
+      if (msg.message?.reactionMessage || msg.message?.protocolMessage
+          || (msg.message?.senderKeyDistributionMessage && !hasRealContent)) {
         console.log('[msg] ignorado (protocolo/reaccion):', normId);
         continue;
       }
 
-      if (!entry.messages.has(normId)) entry.messages.set(normId, []);
-      // Evitar duplicados por id
-      const existing = entry.messages.get(normId);
-      if (existing.find(m => m.id === msg.key.id)) continue;
-
       const msgEntry = {
         id: msg.key.id,
         fromMe: !!msg.key.fromMe,
-        text: isImage ? '[imagen]' : isAudio ? '[audio]' : text,
-        type: isImage ? 'image' : isAudio ? 'audio' : 'text',
+        text: isImage ? (msg.message?.imageMessage?.caption || '[imagen]') : isSticker ? '[sticker]' : isAudio ? '[audio]' : isDoc ? ('[doc:' + docFileName + ']') : text,
+        type: isImage ? 'image' : isSticker ? 'image' : isAudio ? 'audio' : isDoc ? 'document' : 'text',
         timestamp: toMs(msg.messageTimestamp) / 1000,
         pushName: msg.pushName || null,
-        raw: (isImage || isAudio) ? msg : undefined,
+        raw: (isImage || isSticker || isAudio || isDoc) ? msg : undefined,
+        quotedText: quotedText || null,
       };
-      if (isAudio) {
-        msgEntry.duration = msg.message.audioMessage.seconds || 0;
-      }
-      existing.push(msgEntry);
-      
-      // Limitar a 10 mensajes por chat en RAM para evitar OOM
-      if (existing.length > 10) {
-        existing.shift(); // Eliminar el más antiguo
+      if (isAudio) msgEntry.duration = msg.message.audioMessage.seconds || 0;
+      if (isDoc) { msgEntry.fileName = docFileName; msgEntry.mimeType = docMime; }
+
+      // Guardar mensaje en DB
+      await dbInsertMessage(userId, normId, msgEntry);
+
+      // Descargar y persistir media en disco al recibirla
+      if ((isImage || isSticker || isAudio || isDoc) && msg.key.id) {
+        (async () => {
+          try {
+            const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
+            const mediaDir = path.join(SESSIONS_DIR, userId, 'media');
+            fs.mkdirSync(mediaDir, { recursive: true });
+            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+            if (isImage) {
+              fs.writeFileSync(path.join(mediaDir, msg.key.id + '.jpg'), buffer);
+              console.log(`[media] Imagen guardada: ${msg.key.id}.jpg (${buffer.length} bytes)`);
+            } else if (isSticker) {
+              // Convertir .webp a .jpg para compatibilidad con J2ME
+              try {
+                const sharp = require('sharp');
+                const jpgBuffer = await sharp(buffer)
+                  .resize(96, 96, { fit: 'inside', withoutEnlargement: true })
+                  .jpeg({ quality: 80 })
+                  .toBuffer();
+                fs.writeFileSync(path.join(mediaDir, msg.key.id + '.jpg'), jpgBuffer);
+                console.log(`[media] Sticker guardado como JPG: ${msg.key.id}.jpg (${jpgBuffer.length} bytes)`);
+              } catch (sharpErr) {
+                // Si sharp falla, guardar webp de todas formas (fallback)
+                fs.writeFileSync(path.join(mediaDir, msg.key.id + '.jpg'), buffer);
+                console.log(`[media] Sticker guardado (sin conversión): ${msg.key.id}.jpg`);
+              }
+            } else if (isDoc) {
+              // Guardar con nombre original para que el navegador lo descargue bien
+              const safeFileName = (docFileName || 'doc').replace(/[^a-zA-Z0-9._-]/g, '_');
+              fs.writeFileSync(path.join(mediaDir, msg.key.id + '_' + safeFileName), buffer);
+              console.log(`[media] Documento guardado: ${msg.key.id}_${safeFileName} (${buffer.length} bytes)`);
+            } else {
+              fs.writeFileSync(path.join(mediaDir, msg.key.id + '.ogg'), buffer);
+              console.log(`[media] Audio guardado: ${msg.key.id}.ogg (${buffer.length} bytes)`);
+            }
+          } catch (e) {
+            console.log(`[media] Error descargando media ${msg.key.id}:`, e.message);
+          }
+        })();
       }
 
+      // Obtener estado previo del chat de DB para calcular unread y nombre
+      let prevChat = null;
+      try {
+        const rows = await db.query('SELECT * FROM chats WHERE userId=? AND chatId=?', [userId, normId]);
+        if (rows.length > 0) prevChat = rows[0];
+      } catch (_) {}
+
       const agendaName = resolveName(normId);
-      const prevChat = entry.chats.get(normId) || {};
-      const prevUnread = prevChat.unreadCount || 0;
-      const finalLast = isImage ? '[imagen]' : isAudio ? '[audio]' : (text || '');
+      const prevUnread = prevChat?.unreadCount || 0;
+      const finalLast = isImage ? '[imagen]' : isSticker ? '[sticker]' : isAudio ? '[audio]' : isDoc ? ('[doc:' + docFileName + ']') : (text || '');
       const msgTs = toMs(msg.messageTimestamp);
       const newUnread = msg.key.fromMe ? prevUnread : prevUnread + 1;
 
-      // Lógica de nombre:
-      // 1. Si está en agenda → siempre usar nombre de agenda
-      // 2. Si prevName ya fue resuelto por agenda → mantenerlo
-      // 3. Si mensaje recibido (no propio) → usar pushName del otro
-      // 4. Fallback → "No conocido"
       let finalName;
       if (agendaName) {
         finalName = agendaName;
-      } else if (prevChat.name && prevChat.name !== cleanId(normId) && prevChat.name !== 'No conocido') {
+      } else if (prevChat?.name && prevChat.name !== cleanId(normId) && prevChat.name !== 'No conocido') {
         finalName = prevChat.name;
       } else if (!msg.key.fromMe && msg.pushName) {
         finalName = msg.pushName;
@@ -604,70 +667,90 @@ async function createSession(userId) {
       }
 
       console.log(`[msg] Chat actualizado: ${normId}, name="${finalName}", lastMsg="${finalLast}", ts=${msgTs}`);
+      await dbUpsertChat(userId, normId, finalName,
+        isImage ? '[imagen]' : isSticker ? '[sticker]' : isAudio ? '[audio]' : isDoc ? ('[doc:' + docFileName + ']') : (text || ''),
+        msgTs, newUnread);
 
-      entry.chats.set(normId, {
+      // Push TCP: notificar al cliente J2ME en tiempo real
+      tcpServer.push(userId, {
+        type: 'msg',
+        chatId: normId,
+        text: msgEntry.text,
+        fromMe: msgEntry.fromMe,
+        ts: msgEntry.timestamp,
+        msgType: msgEntry.type,
+        msgId: msgEntry.id,
+        quoted: msgEntry.quotedText || null,
+        sender: (typeof msgEntry.pushName === 'string' ? msgEntry.pushName.replace(/[^\x20-\xFF]/g, '').trim() : msgEntry.pushName),
+      });
+      // Push TCP: actualizar la lista de chats
+      tcpServer.push(userId, {
+        type: 'chat',
+        chatId: normId,
         name: finalName,
-        lastMessage: isImage ? '[imagen]' : isAudio ? '[audio]' : (text || ''),
-        lastTimestamp: toMs(msg.messageTimestamp),
+        lastMessage: finalLast,
+        lastTimestamp: msgTs,
         unreadCount: newUnread,
       });
 
       if (chatId.endsWith('@lid')) tryResolveLid(chatId);
       touch(userId);
     }
-    // Persistir en disco tras cada batch de mensajes
-    saveChatsCache(userId, entry.chats, entry.messages);
   });
 
-  // Persistir mensajes entrantes en inbox separado (no se borra al reconectar)
-  sock.ev.on('messages.upsert', ({ messages }) => {
-    for (const msg of messages) {
-      const chatId = msg.key.remoteJid;
-      if (!chatId) continue;
-      if (!msg.message) continue;
-      const normId = (chatId.endsWith('@lid') && entry.lidCache[chatId])
-        ? entry.lidCache[chatId] + '@s.whatsapp.net'
-        : chatId;
-      const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '[media]';
-      const isImage = !!msg.message?.imageMessage;
-      const isAudio = !!msg.message?.audioMessage;
-      if (msg.message?.reactionMessage || msg.message?.protocolMessage || msg.message?.senderKeyDistributionMessage) continue;
-      const msgEntry = {
-        id: msg.key.id,
-        fromMe: !!msg.key.fromMe,
-        text: isImage ? '[imagen]' : isAudio ? '[audio]' : text,
-        type: isImage ? 'image' : isAudio ? 'audio' : 'text',
-        timestamp: toMs(msg.messageTimestamp) / 1000,
-        pushName: msg.pushName || null,
-        raw: (isImage || isAudio) ? msg : undefined,
-      };
-      if (isAudio) {
-        msgEntry.duration = msg.message.audioMessage.seconds || 0;
-      }
-      saveInbox(userId, normId, msgEntry);
-    }
-  });
-
-  // Presencia: escribiendo o no
+  // Presencia: escribiendo, en linea, ultima conexion
   sock.ev.on('presence.update', ({ id, presences }) => {
-    for (const [participant, data] of Object.entries(presences)) {
-      const isTyping = data.lastKnownPresence === 'composing' || data.lastKnownPresence === 'recording';
+    for (const [participant, p] of Object.entries(presences)) {
+      if (!p) continue;
       const normId = (id.endsWith('@lid') && entry.lidCache[id])
         ? entry.lidCache[id] + '@s.whatsapp.net'
         : id;
-      entry.presence.set(normId, { typing: isTyping, timestamp: Date.now() });
+      entry.presence.set(normId, {
+        typing:    p.lastKnownPresence === 'composing',
+        recording: p.lastKnownPresence === 'recording',
+        online:    p.lastKnownPresence === 'available',
+        lastSeen:  p.lastSeen || null,
+        timestamp: Date.now()
+      });
+      // Push TCP: notificar presencia en tiempo real
+      tcpServer.push(userId, {
+        type: 'presence',
+        chatId: normId,
+        typing: p.lastKnownPresence === 'composing',
+        online: p.lastKnownPresence === 'available',
+      });
     }
   });
 
   // Visto: actualizar ack de mensajes enviados (1=enviado, 2=entregado, 3=leido)
   sock.ev.on('messages.update', (updates) => {
     for (const update of updates) {
-      const chatId = update.key.remoteJid;
+      let chatId = update.key.remoteJid;
+      console.log('[ack] update:', update.key.id, 'status:', update.update?.status, 'chatId:', chatId);
+      console.log('[ack] lidCache lookup:', chatId, '->', entry.lidCache[chatId]);
       if (!chatId || !update.update?.status) continue;
-      const msgs = entry.messages.get(chatId);
-      if (!msgs) continue;
-      const msg = msgs.find(m => m.id === update.key.id);
-      if (msg) msg.ack = update.update.status;
+      if (chatId.endsWith('@lid') && entry.lidCache[chatId]) {
+        chatId = entry.lidCache[chatId] + '@s.whatsapp.net';
+      }
+      const ackStatus = update.update.status;
+      const msgId = update.key.id;
+      // Retry: si el UPDATE no afecta filas (mensaje aun no en DB), reintentar tras 3s
+      db.query(
+        'UPDATE messages SET ack=? WHERE userId=? AND chatId=? AND messageId=? AND ack < ?',
+        [ackStatus, userId, chatId, msgId, ackStatus]
+      ).then(result => {
+        console.log('[ack] affectedRows:', result?.affectedRows, 'result:', JSON.stringify(result));
+        if (result.affectedRows === 0) {
+          setTimeout(() => {
+            db.query(
+              'UPDATE messages SET ack=? WHERE userId=? AND chatId=? AND messageId=? AND ack < ?',
+              [ackStatus, userId, chatId, msgId, ackStatus]
+            ).catch(() => {});
+          }, 3000);
+        }
+        // Push TCP: notificar cambio de ack
+        tcpServer.push(userId, { type: 'ack', chatId, msgId, status: ackStatus });
+      }).catch(() => {});
     }
   });
 

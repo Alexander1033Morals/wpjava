@@ -1,0 +1,13 @@
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Socket/chats.js b/node_modules/@whiskeysockets/baileys/lib/Socket/chats.js
+index 9a7947f..c99e738 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Socket/chats.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Socket/chats.js
+@@ -555,7 +555,7 @@ export const makeChatsSocket = (config) => {
+         const me = authState.creds.me;
+         const isSelf = me && (normalizedJid === jidNormalizedUser(me.id) || (me.lid && normalizedJid === jidNormalizedUser(me.lid)));
+         let content = baseContent;
+-        if (serverProps.profilePicPrivacyToken && isUserJid && !isSelf) {
++        if (false) { // Deshabilitado: buildTcTokenFromJid causa hang indefinido (bug WhiskeySockets/Baileys#2498)
+             content = await buildTcTokenFromJid({
+                 authState,
+                 jid: normalizedJid,

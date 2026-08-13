@@ -7,10 +7,17 @@ const {
   activeCount,
   MAX_CONCURRENT_SESSIONS,
   cleanupMedia,
+  checkAccess,
 } = require('./sessionManager');
+const tcpServer = require('./tcpServer');
+tcpServer.init(checkAccess);
 
 const app = express();
-app.use(express.json());
+app.use((req, res, next) => {
+  // /sendaudio, /sendimage, /senddoc reciben datos raw — no parsear como JSON
+  if (req.path.startsWith('/sendaudio/') || req.path.startsWith('/sendimage/') || req.path.startsWith('/senddoc/')) return next();
+  express.json()(req, res, next);
+});
 
 app.get('/', (req, res) => {
   res.json({
@@ -35,8 +42,8 @@ app.listen(PORT, '0.0.0.0', () => {
 const INACTIVE_DAYS = parseInt(process.env.INACTIVE_SESSION_DAYS || '30', 10);
 setInterval(() => cleanupInactive(INACTIVE_DAYS), 24 * 60 * 60 * 1000);
 
-// Limpieza de fotos/audios antiguos cada 24 horas (2 dias)
-setInterval(() => cleanupMedia(2), 24 * 60 * 60 * 1000);
+// Limpieza de media: imagenes >3 dias, audios >5 dias — una vez al dia
+setInterval(() => cleanupMedia(3, 5), 24 * 60 * 60 * 1000);
 
 process.on('SIGINT', () => {
   console.log('Cerrando servidor...');
