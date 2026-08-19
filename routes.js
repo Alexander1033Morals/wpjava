@@ -657,8 +657,10 @@ router.get('/contactphoto/:userId/:chatId', auth, async (req, res) => {
   
   
   const session = getSession(userId);
-  
+  console.log(`[contactphoto] userId=${userId} chatId=${chatIdParam} full=${full} status=${session?.status || 'NO_SESSION'}`);
+
   if (!session?.sock) {
+    console.log(`[contactphoto] RESP null — sin sock userId=${userId}`);
     return res.json({ photo: null, error: 'No socket' });
   }
   
@@ -675,19 +677,23 @@ router.get('/contactphoto/:userId/:chatId', auth, async (req, res) => {
   }
   
   
-  try {
+try {
     // Timeout de 8s para evitar bug #2498 de Baileys
     let photoUrl = null;
     try {
       const picType = full ? 'image' : 'preview';
+      console.log(`[contactphoto] profilePictureUrl jid=${jid} type=${picType}`);
       photoUrl = await Promise.race([
         session.sock.profilePictureUrl(jid, picType),
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
       ]);
+      console.log(`[contactphoto] profilePictureUrl OK jid=${jid} url=${photoUrl ? 'SI(' + photoUrl.length + ')' : 'NO'}`);
     } catch (e) {
+      console.log(`[contactphoto] profilePictureUrl ERROR jid=${jid} msg=${e?.message}`);
     }
-    
+
     if (!photoUrl) {
+      console.log(`[contactphoto] RESP null — sin URL jid=${jid}`);
       return res.json({ photo: null });
     }
 
@@ -711,6 +717,7 @@ router.get('/contactphoto/:userId/:chatId', auth, async (req, res) => {
               .jpeg({ quality: 80 })
               .toBuffer();
             const base64full = buf.toString('base64');
+            console.log(`[contactphoto] RESP full OK jid=${jid} bytes=${buf.length}`);
             return res.json({ photo: 'data:image/jpeg;base64,' + base64full });
           }
           const size = 30;
@@ -735,16 +742,20 @@ router.get('/contactphoto/:userId/:chatId', auth, async (req, res) => {
           buf = await sharp(raw, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer();
           
           const base64 = buf.toString('base64');
+          console.log(`[contactphoto] RESP preview OK jid=${jid} bytes=${buf.length}`);
           
           res.json({ photo: 'data:image/png;base64,' + base64 });
         } catch (sharpErr) {
+          console.log(`[contactphoto] sharp ERROR jid=${jid} msg=${sharpErr?.message}`);
           res.json({ photo: null });
         }
       });
     }).on('error', (httpErr) => {
+      console.log(`[contactphoto] descarga URL ERROR jid=${jid} msg=${httpErr?.message}`);
       res.json({ photo: null });
     });
   } catch (catchErr) {
+    console.log(`[contactphoto] catch general ERROR jid=${jid} msg=${catchErr?.message}`);
     res.json({ photo: null });
   }
 });
