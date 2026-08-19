@@ -8,6 +8,17 @@ const {
   saveOutbox,
 } = require('./sessionManager');
 
+const fs = require('fs');
+const path = require('path');
+
+const chatsPath = path.join(__dirname, 'node_modules', '@whiskeysockets', 'baileys', 'lib', 'Socket', 'chats.js');
+const chatsContent = fs.readFileSync(chatsPath, 'utf8');
+const tienePatch = chatsContent.includes('Deshabilitado: buildTcTokenFromJid');
+
+console.log('=====================================');
+console.log('[VERIFICACION PATCH] chats.js tiene el parche aplicado:', tienePatch);
+console.log('=====================================');
+
 const router = express.Router();
 
 router.post('/link', async (req, res) => {
