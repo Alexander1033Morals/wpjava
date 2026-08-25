@@ -376,15 +376,18 @@ async function createSession(userId) {
         fs.rmSync(userDir, { recursive: true, force: true });
         await dbDeleteSession(userId);
         console.log(`[session] ${userId} cerro sesion, datos eliminados`);
-      } else {
-        entry.status = 'reconnecting';
-        console.log(`[link] Reintentando en 3s userId=${userId}`);
-        console.log(`[session] ${userId} desconectado, reintentando...`);
-        setTimeout(() => {
-          sessions.delete(userId);
-          createSession(userId).catch((e) => console.error('Error reconectando', e));
-        }, 3000);
-      }
+        } else {
+          entry.status = 'reconnecting';
+          // Cerrar explicitamente el socket viejo para que Baileys no
+          // reconecte en paralelo con el nuevo (evita sockets fantasma)
+          try { sock.end(undefined); } catch (_) {}
+          console.log(`[link] Reintentando en 3s userId=${userId}`);
+          console.log(`[session] ${userId} desconectado, reintentando...`);
+          setTimeout(() => {
+            sessions.delete(userId);
+            createSession(userId).catch((e) => console.error('Error reconectando', e));
+          }, 3000);
+        }
     }
   });
 
