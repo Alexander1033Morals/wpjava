@@ -604,16 +604,20 @@ async function createSession(userId) {
       // Guardar mensaje en DB
       await dbInsertMessage(userId, normId, msgEntry);
 
+      if (isImage || isSticker) {
+        console.log(`[media-recv] id=${msg.key.id} ts=${Date.now()} keys=${JSON.stringify(Object.keys(msg.message || {}))} isImage=${isImage} isSticker=${isSticker}`);
+      }
+
       // Descargar y persistir media en disco al recibirla
       if ((isImage || isSticker || isAudio || isDoc) && msg.key.id) {
         (async () => {
           try {
-            console.log(`[media] Descargando msgId=${msg.key.id} tipo=${isAudio ? 'audio' : isImage ? 'imagen' : isSticker ? 'sticker' : 'doc'} chatId=${normId}`);
+            console.log(`[media] Descargando msgId=${msg.key.id} ts=${Date.now()} tipo=${isAudio ? 'audio' : isImage ? 'imagen' : isSticker ? 'sticker' : 'doc'} chatId=${normId}`);
             const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
             const mediaDir = path.join(SESSIONS_DIR, userId, 'media');
             fs.mkdirSync(mediaDir, { recursive: true });
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
-            console.log(`[media] Descargado msgId=${msg.key.id} bytes=${buffer.length}`);
+            console.log(`[media] Descargado msgId=${msg.key.id} ts=${Date.now()} bytes=${buffer.length}`);
             if (isImage) {
               fs.writeFileSync(path.join(mediaDir, msg.key.id + '.jpg'), buffer);
             } else if (isSticker) {
@@ -638,7 +642,7 @@ async function createSession(userId) {
               console.log(`[media] AUDIO guardado: ${msg.key.id}.ogg (${buffer.length} bytes)`);
             }
           } catch (e) {
-            console.log(`[media] Error descargando media ${msg.key.id}:`, e.message);
+            console.log(`[media] Error descargando media ${msg.key.id} ts=${Date.now()}:`, e.message);
           }
         })();
       }

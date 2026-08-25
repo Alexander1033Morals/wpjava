@@ -861,7 +861,7 @@ router.get('/media/:userId/:messageId', auth, async (req, res) => {
       return res.json({ data: 'data:image/jpeg;base64,' + buffer.toString('base64'), type: 'image' });
     }
 
-    console.log('[media] Archivo no encontrado en disco para:', msgId);
+    console.log('[media] Archivo no encontrado en disco para:', msgId, 'ts=' + Date.now());
     return res.status(404).json({ error: 'Media no disponible' });
 
   } catch (err) {
